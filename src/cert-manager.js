@@ -15,6 +15,7 @@ const execFileAsync = promisify(execFile)
 export function loadTlsOptions(config) {
   const certDomain = config.wildcard ?? config.fqdn
   return {
+    allowHTTP1: true,
     key: readFileSync(`/etc/letsencrypt/live/${certDomain}/privkey.pem`),
     cert: readFileSync(`/etc/letsencrypt/live/${certDomain}/fullchain.pem`),
   }

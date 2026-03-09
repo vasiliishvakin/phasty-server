@@ -13,6 +13,7 @@ const DEFAULTS = {
   publicDir: 'public',
   php: 'php',
   https: false,
+  http2: null,
   domain: null,
   wildcard: null,
   email: null,
@@ -31,6 +32,7 @@ const MergedConfigSchema = v.pipe(
     publicDir: v.string(),
     php: v.string(),
     https: v.boolean(),
+    http2: v.nullable(v.boolean()),
     domain: v.nullable(v.string()),
     email: v.nullable(v.string()),
     wildcard: v.nullable(v.string()),
@@ -106,6 +108,7 @@ export async function loadConfig(cliArgs = {}) {
  */
 async function resolveConfig(config) {
   config.fqdn = config.wildcard ? `${config.domain}.${config.wildcard}` : config.domain
+  if (config.http2 === null) config.http2 = config.https
 
   const artisan = await fileAccessible(path.join(process.cwd(), 'artisan'))
   config.artisan = artisan

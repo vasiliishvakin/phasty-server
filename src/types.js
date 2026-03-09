@@ -9,6 +9,7 @@
  * @property {number|null} [phpPort]
  * @property {string} [publicDir]
  * @property {boolean} [https]
+ * @property {boolean} [http2]
  * @property {string|null} [domain]
  * @property {string|null} [email]
  * @property {string} [php]
@@ -29,6 +30,7 @@
  * @property {number} phpPort
  * @property {string} publicDir
  * @property {boolean} https
+ * @property {boolean} http2
  * @property {string|null} domain
  * @property {string|null} email
  * @property {string} php
