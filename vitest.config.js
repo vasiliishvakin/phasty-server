@@ -8,7 +8,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.js'],
-      exclude: ['src/cert-manager.js', 'src/vite-proxy.js'],
+      exclude: ['src/cert-manager.js', 'src/viteProxy.js'],
     }
   }
 })

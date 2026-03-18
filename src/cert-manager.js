@@ -1,100 +1,129 @@
-import { execFile } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { access } from 'node:fs/promises'
-import { promisify } from 'node:util'
+// @ts-check
+import { readFile } from 'node:fs/promises'
 import { X509Certificate } from 'node:crypto'
-import { logger } from './logger.js'
+import os from 'node:os'
+import { fileExists } from './helpers.js'
+import { getRunner } from './run.js'
 
-const execFileAsync = promisify(execFile)
+/**
+ * https config as it looks when https.enabled = true (Zod guarantees domain and cert.email).
+ * @typedef {NonNullable<import('./config.js').Config['https']> & { domain: string, cert: NonNullable<import('./config.js').Config['https']['cert']> & { email: string } }} HttpsConfig
+ */
+
+/**
+ * @param {import('./config.js').Config['https']} httpsConfig
+ * @returns {string}
+ */
+function getCertDir(httpsConfig) {
+    const certDomain = httpsConfig?.cert?.certDomain
+    if (certDomain) {
+        return certDomain.replace(/^\*\./, '')
+    }
+    return httpsConfig?.domain ?? ''
+}
+
+/**
+ * @param {string} p
+ * @returns {string}
+ */
+function expandHome(p) {
+    if (p.startsWith('~')) {
+        return os.homedir() + p.slice(1)
+    }
+    return p
+}
+
+/**
+ * @param {string} certPath
+ * @param {number} [thresholdDays=14]
+ * @returns {Promise<boolean>}
+ */
+async function isCertValid(certPath, thresholdDays = 14) {
+    try {
+        const pem = await readFile(certPath, 'utf8')
+        const cert = new X509Certificate(pem)
+        const expiresAt = new Date(cert.validTo)
+        const threshold = new Date(Date.now() + thresholdDays * 24 * 60 * 60 * 1000)
+        return expiresAt > threshold
+    } catch {
+        return false
+    }
+}
+
+/**
+ * @param {HttpsConfig} httpsConfig
+ * @returns {string[]}
+ */
+function buildCertbotArgs(httpsConfig) {
+    const { domain, cert } = httpsConfig
+    const { email, certDomain, dns } = cert
+
+    const credentialsFile = expandHome(dns.credentialsFile)
+
+    const args = [
+        'certonly',
+        '--dns-cloudflare',
+        '--dns-cloudflare-credentials', credentialsFile,
+        '--non-interactive',
+        '--agree-tos',
+        '--email', email,
+    ]
+
+    if (certDomain) {
+        if (certDomain.startsWith('*.')) {
+            const base = certDomain.slice(2)
+            args.push('-d', certDomain, '-d', base)
+        } else {
+            args.push('-d', certDomain)
+        }
+    } else {
+        args.push('-d', domain)
+    }
+
+    return args
+}
+
+/**
+ * @param {import('./config.js').Config} config
+ * @param {*} logger
+ */
+export async function ensureCert(config, logger) {
+    const httpsConfig = /** @type {HttpsConfig} */ (config.https)
+    const certDir = getCertDir(httpsConfig)
+    const certPath = `/etc/letsencrypt/live/${certDir}/fullchain.pem`
+
+    if (await isCertValid(certPath, 14)) {
+        logger.info('Certificate is valid')
+        return
+    }
+
+    const runner = getRunner(logger)
+    if (await fileExists(certPath)) {
+        logger.info(`Renewing certificate for ${certDir}...`)
+        await runner.run('certbot', ['renew', '--cert-name', certDir, '--non-interactive'])
+    } else {
+        logger.info('Obtaining new certificate via certbot...')
+        await runner.run('certbot', buildCertbotArgs(httpsConfig))
+    }
+}
 
 /**
  * Returns the HTTPS options object for Fastify, reading certs from letsencrypt.
- * @param {import('./types.js').PhastyConfig} config
- * @returns {{ key: Buffer, cert: Buffer }}
+ * @param {import('./config.js').Config} config
+ * @returns {Promise<{ key: Buffer, cert: Buffer, allowHTTP1: boolean }>}
  */
-export function loadTlsOptions(config) {
-  const certDomain = config.wildcard ?? config.fqdn
-  return {
-    allowHTTP1: true,
-    key: readFileSync(`/etc/letsencrypt/live/${certDomain}/privkey.pem`),
-    cert: readFileSync(`/etc/letsencrypt/live/${certDomain}/fullchain.pem`),
-  }
-}
+export async function loadTlsOptions(config) {
+    const certDir = getCertDir(config.https)
+    const base = `/etc/letsencrypt/live/${certDir}`
 
-/**
- * Ensures a valid certificate exists for the domain; obtains or renews as needed.
- * @param {import('./types.js').PhastyConfig} config
- */
-export async function ensureCert(config) {
-  const { fqdn, wildcard, email, cloudflareIni } = config
-  const certDomain = wildcard ?? fqdn
-  const certPath = `/etc/letsencrypt/live/${certDomain}/fullchain.pem`
-  const iniPath = cloudflareIni.replace(/^~/, process.env.HOME || '/root')
+    const [key, cert] = await Promise.all([
+        readFile(`${base}/privkey.pem`),
+        readFile(`${base}/fullchain.pem`)
+    ])
 
-  const exists = await certExists(certPath)
-
-  if (!exists) {
-    logger.info(`phasty: obtaining certificate for ${certDomain}...`)
-    await obtainCert({ fqdn, wildcard, email, iniPath })
-    return
-  }
-
-  const daysLeft = getDaysLeft(certPath)
-  if (daysLeft < 30) {
-    logger.info(`phasty: certificate expires in ${daysLeft} days, renewing...`)
-    await renewCert(certDomain)
-  }
-}
-
-async function certExists(certPath) {
-  try {
-    await access(certPath)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function getDaysLeft(certPath) {
-  const cert = new X509Certificate(readFileSync(certPath))
-  const validTo = new Date(cert.validTo)
-  const now = new Date()
-  return Math.floor((validTo - now) / (1000 * 60 * 60 * 24))
-}
-
-async function obtainCert({ fqdn, wildcard, email, iniPath }) {
-  const domains = wildcard
-    ? ['-d', `*.${wildcard}`, '-d', wildcard]
-    : ['-d', fqdn]
-
-  const args = [
-    'certonly',
-    '--dns-cloudflare',
-    '--dns-cloudflare-credentials', iniPath,
-    ...domains,
-    '--email', email,
-    '--agree-tos',
-    '--non-interactive',
-  ]
-
-  try {
-    logger.info(`$ certbot ${args.join(' ')}`)
-    await execFileAsync('certbot', args, { signal: AbortSignal.timeout(120_000) })
-  } catch (err) {
-    logger.error(`phasty: certbot failed: ${err.message}`)
-    process.exit(1)
-  }
-}
-
-async function renewCert(domain) {
-  try {
-    const renewArgs = ['renew', '--cert-name', domain, '--non-interactive']
-    logger.info(`$ certbot ${renewArgs.join(' ')}`)
-    await execFileAsync('certbot', renewArgs, {
-      signal: AbortSignal.timeout(120_000),
-    })
-  } catch (err) {
-    logger.error(`phasty: certbot renew failed: ${err.message}`)
-    process.exit(1)
-  }
+    return {
+        allowHTTP1: true,
+        key,
+        cert,
+    }
 }

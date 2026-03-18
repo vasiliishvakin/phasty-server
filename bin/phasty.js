@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-import('../src/cli.js').then(m => m.main(process.argv.slice(2)))
+import('../src/cli.js').then(m => m.main(process.argv))

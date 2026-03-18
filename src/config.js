@@ -1,174 +1,207 @@
-import * as v from 'valibot'
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import { findFreePort } from './port-finder.js'
-
-/** @typedef {import('./types.js').PhastyConfig} PhastyConfig */
-
-const DEFAULTS = {
-  port: null,
-  host: '0.0.0.0',
-  phpPort: null,
-  phpHost: '127.0.0.1',
-  publicDir: 'public',
-  php: 'php',
-  https: false,
-  http2: null,
-  domain: null,
-  wildcard: null,
-  email: null,
-  cloudflareIni: '~/.secrets/cloudflare.ini',
-  vite: null,
-  vitePort: null,
-  viteInternalPort: null,
-}
-
-const MergedConfigSchema = v.pipe(
-  v.object({
-    host: v.string(),
-    port: v.nullable(v.number()),
-    phpHost: v.string(),
-    phpPort: v.nullable(v.number()),
-    publicDir: v.string(),
-    php: v.string(),
-    https: v.boolean(),
-    http2: v.nullable(v.boolean()),
-    domain: v.nullable(v.string()),
-    email: v.nullable(v.string()),
-    wildcard: v.nullable(v.string()),
-    cloudflareIni: v.string(),
-    vite: v.nullable(v.boolean()),
-    vitePort: v.nullable(v.number()),
-    viteInternalPort: v.nullable(v.number()),
-  }),
-  v.check((c) => !c.https || Boolean(c.domain), 'https requires domain to be set'),
-  v.check((c) => !c.https || Boolean(c.email), 'https requires email to be set'),
-)
+import { z } from 'zod'
+import os from 'os'
+import fs from 'fs'
+import path from 'path'
+import { deepmergeCustom } from 'deepmerge-ts'
+import { parse as parseYaml } from 'yaml'
+import { isCovered } from './helpers.js'
 
 /**
- * Loads user-level config from ~/.phasty.json.
- * Returns {} if the file does not exist; exits on parse error.
- * @returns {Promise<Record<string, unknown>>}
+ * Resolves a possibly-partial domain to a full FQDN.
+ * If `domain` contains no dot and `certDomain` is a wildcard (e.g. `*.example.com`),
+ * builds `domain.example.com`. Otherwise returns `domain` as-is.
+ * @param {string} domain
+ * @param {string} certDomain
+ * @returns {string}
  */
-export async function loadUserConfig() {
-  const userConfigPath = path.join(process.env.HOME || '~', '.phasty.json')
-  let raw
-  try {
-    raw = await fs.readFile(userConfigPath, 'utf8')
-  } catch {
-    return {}
-  }
-  try {
-    return JSON.parse(raw)
-  } catch (err) {
-    console.error(`phasty: invalid JSON in ${userConfigPath}: ${err.message}`)
-    process.exit(1)
-  }
+export function resolveDomain(domain, certDomain) {
+    if (!domain.includes('.') && certDomain.startsWith('*.')) {
+        return `${domain}.${certDomain.slice(2)}`
+    }
+    return domain
 }
+
+const merge = deepmergeCustom({
+    mergeArrays: false
+})
+
+export const ConfigSchema = z.object({
+    server: z.object({
+        host: z.string().default('0.0.0.0'),
+        port: z.number().int().min(1).max(65535).optional(),
+    }).prefault({}),
+
+    routing: z.object({
+        publicDirs: z.array(z.string()).optional(),
+        denyRegex: z.array(z.string()).default(['^\\.', '^node_modules', '^vendor']),
+    }).prefault({}),
+
+    php: z.object({
+        enabled: z.boolean().default(false),
+        bin: z.string().default('php'),
+        host: z.string().default('127.0.0.1'),
+        workers: z.coerce.number().int().positive().optional(),
+        port: z.object({
+            start: z.number().int().min(1).max(65535).default(8000),
+            stop: z.number().int().min(1).max(65535).optional(),
+        })
+            .refine(({ start, stop }) => stop === undefined || stop >= start, {
+                message: 'port.stop must be >= port.start',
+            })
+            .prefault({}),
+        extensions: z.array(z.string()).default(['php']),
+    }).prefault({}),
+
+    vite: z.object({
+        enabled: z.boolean().default(false),
+        bin: z.string().default('npm'),
+        script: z.string().default('dev'),
+        host: z.string().default('0.0.0.0'),
+        port: z.object({
+            start: z.number().int().min(1).max(65535).default(8000),
+            stop: z.number().int().min(1).max(65535).optional(),
+        }).prefault({}),
+        instance: z.object({
+            host: z.string().default('127.0.0.1'),
+            port: z.object({
+                start: z.number().int().min(1).max(65535).default(8000),
+                stop: z.number().int().min(1).max(65535).optional(),
+            }).prefault({}),
+        }).prefault({}),
+    }).prefault({}),
+
+    https: z.object({
+        enabled: z.boolean().default(false),
+
+        domain: z.string().min(1).optional(),
+
+        cert: z.object({
+            email: z.email().optional(),
+
+            certDomain: z.string().min(1).optional(),
+
+            dns: z.object({
+                provider: z.literal('cloudflare').default('cloudflare'),
+                credentialsFile: z.string().default('~/.secrets/cloudflare.ini'),
+            }).prefault({}),
+        }).optional(),
+    })
+        .prefault({})
+        .superRefine((val, ctx) => {
+            if (!val.enabled) return
+
+            if (!val.domain) {
+                ctx.addIssue({
+                    code: 'custom',
+                    path: ['domain'],
+                    message: 'https.domain is required when https.enabled = true',
+                })
+            }
+
+            if (!val.cert?.email) {
+                ctx.addIssue({
+                    code: 'custom',
+                    path: ['cert', 'email'],
+                    message: 'https.cert.email is required when https.enabled = true',
+                })
+            }
+
+            if (val.cert?.certDomain && val.domain && val.domain.includes('.')) {
+                if (!isCovered(val.domain, val.cert.certDomain)) {
+                    ctx.addIssue({
+                        code: 'custom',
+                        path: ['cert', 'certDomain'],
+                        message: 'certDomain does not cover domain',
+                    })
+                }
+            }
+        })
+        .transform(val => {
+            if (!val.domain || !val.cert?.certDomain) return val
+            return { ...val, domain: resolveDomain(val.domain, val.cert.certDomain) }
+        })
+})
 
 /**
- * Loads and resolves configuration from file, CLI args, and defaults.
- * Priority: CLI args > project config > user config > defaults
- * @param {Partial<PhastyConfig>} [cliArgs]
- * @returns {Promise<PhastyConfig>}
+ * @typedef {import('zod').infer<typeof ConfigSchema>} Config
  */
-export async function loadConfig(cliArgs = {}) {
-  const userConfig = await loadUserConfig()
 
-  let fileConfig = {}
-  try {
-    const configPath = path.join(process.cwd(), 'phasty.config.js')
-    const mod = await import(configPath)
-    fileConfig = mod.default ?? {}
-  } catch {
-    // no config file — use defaults
-  }
+async function loadHomeConfig() {
+    const file = path.join(os.homedir(), '.phasty.yaml')
 
-  // Merge: CLI > project config > user config > defaults
-  // Strip undefined CLI values so they don't shadow defaults
-  const cleanCliArgs = Object.fromEntries(Object.entries(cliArgs).filter(([, v]) => v !== undefined))
-  const merged = { ...DEFAULTS, ...userConfig, ...fileConfig, ...cleanCliArgs }
+    if (!fs.existsSync(file)) return {}
 
-  const result = v.safeParse(MergedConfigSchema, merged)
-  if (!result.success) {
-    const issue = result.issues[0]
-    const field = issue.path?.map((p) => p.key).join('.')
-    const msg = field ? `${field}: ${issue.message}` : issue.message
-    console.error(`phasty: ${msg}`)
-    process.exit(1)
-  }
-
-  return resolveConfig(result.output)
-}
-
-/**
- * Resolves dynamic values: detects artisan, resolves publicDir, allocates ports.
- * @param {v.InferOutput<typeof MergedConfigSchema>} config
- * @returns {Promise<PhastyConfig>}
- */
-async function resolveConfig(config) {
-  config.fqdn = config.wildcard ? `${config.domain}.${config.wildcard}` : config.domain
-  if (config.http2 === null) config.http2 = config.https
-
-  const artisan = await fileAccessible(path.join(process.cwd(), 'artisan'))
-  config.artisan = artisan
-
-  const publicDirResolved = path.resolve(config.publicDir)
-  const publicDirExists = await fileAccessible(publicDirResolved)
-
-  if (!publicDirExists) {
-    if (artisan) {
-      console.error(`phasty: publicDir does not exist: ${publicDirResolved}`)
-      process.exit(1)
-    }
-    config.publicDir = process.cwd()
-    config.publicDirFallback = true
-  } else {
-    config.publicDirFallback = false
-  }
-
-  if (!config.port) {
-    config.port = await findFreePort(8001)
-  }
-  if (!config.phpPort) {
-    config.phpPort = await findFreePort(config.port + 1)
-  }
-
-  if (config.vite === null) {
-    config.vite = await detectVite()
-  }
-
-  if (config.vite) {
-    if (!config.vitePort) {
-      config.vitePort = await findFreePort(config.phpPort + 1)
-    }
-    if (!config.viteInternalPort) {
-      config.viteInternalPort = await findFreePort(config.vitePort + 1)
-    }
-  }
-
-  return config
-}
-
-export async function detectVite() {
-  try {
-    await fs.access(path.join(process.cwd(), 'vite.config.js'))
-    return true
-  } catch {
     try {
-      await fs.access(path.join(process.cwd(), 'vite.config.ts'))
-      return true
-    } catch {
-      return false
+        return parseYaml(fs.readFileSync(file, 'utf8')) ?? {}
+    } catch (e) {
+        console.error(`Invalid YAML in ${file}: ${e.message}`)
+        process.exit(1)
     }
-  }
 }
 
-async function fileAccessible(filePath) {
-  try {
-    await fs.access(filePath)
-    return true
-  } catch {
-    return false
-  }
+async function loadProjectConfig() {
+    const file = path.resolve('phasty.config.js')
+
+    if (!fs.existsSync(file)) return {}
+
+    const mod = await import(file)
+    return mod.default ?? mod
+}
+
+function normalizeCli(cli) {
+    return {
+        server: {
+            port: cli.port,
+            host: cli.host
+        },
+        php: {
+            port: cli.phpPort ? { start: cli.phpPort } : undefined,
+            bin: cli.php
+        },
+        routing: {
+            publicDirs: cli.publicDir ? [cli.publicDir] : undefined
+        }
+    }
+}
+
+async function loadSources(cli) {
+    const [home, project] = await Promise.all([
+        loadHomeConfig(),
+        loadProjectConfig(),
+    ])
+
+    return {
+        home: home ?? {},
+        project: project ?? {},
+        cli: normalizeCli(cli) ?? {}
+    }
+}
+
+function mergeConfig({ home, project, cli }) {
+    return merge(home, project, cli)
+}
+
+function validateConfig(config) {
+    const result = ConfigSchema.safeParse(config)
+
+    if (!result.success) {
+        const { fieldErrors } = z.flattenError(result.error)
+
+        console.error('Invalid configuration:')
+        console.error(JSON.stringify(fieldErrors, null, 2))
+        process.exit(1)
+    }
+
+    return result.data
+}
+
+export async function loadConfig(cli = {}) {
+
+    const sources = await loadSources(cli)
+
+    const merged = mergeConfig(sources)
+
+    const config = validateConfig(merged)
+
+    return config
 }
