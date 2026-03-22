@@ -7,7 +7,7 @@ import { createPhpArtisanService } from './services/phpArtisan.js'
 import { createViteService } from './services/vite.js'
 import { getLogger } from './logger/logger.js'
 import { serviceLog, serviceUrl } from './logger/serviceLog.js'
-import { buildUrl } from './helpers.js'
+import { getPort, buildUrl, resolveServerAddress } from './helpers.js'
 import { createViteProxy } from './viteProxy.js'
 import { ensureCert, loadTlsOptions } from './cert-manager.js'
 
@@ -65,11 +65,33 @@ async function commandStart(cliOpts) {
     const config = await loadConfig(cliOpts)
     const manager = new ProcessManager(logger)
 
+    let tlsOptions = null
+    if (config.https?.enabled) {
+        await ensureCert(config, logger)
+        tlsOptions = await loadTlsOptions(config)
+    }
+
+    const tlsEnabled = !!tlsOptions
+
+    if (tlsEnabled) {
+        serviceLog('TLS enabled')
+    } else {
+        serviceLog('TLS not enabled')
+    }
+
+    const { port: { start: serverPortStart, stop: serverPortStop } } = config.server
+    const serverPort = await getPort(serverPortStart, serverPortStop)
+
+    const serverAddr = resolveServerAddress(config, serverPort, tlsEnabled)
+    const serverUrl = serverAddr.buildUrl()
+
     let phpProcess = null
+    let phpCleanup = async () => { }
     if (config.php?.enabled) {
-        const phpService = await createPhpArtisanService(manager, config)
+        const phpService = await createPhpArtisanService(manager, config, tlsEnabled, serverPort)
         if (phpService) {
             phpProcess = phpService.start()
+            phpCleanup = phpService.cleanup
         }
     }
 
@@ -86,34 +108,25 @@ async function commandStart(cliOpts) {
         } :
         null
 
-    let tlsOptions = null
-    if (config.https?.enabled) {
-        await ensureCert(config, logger)
-        tlsOptions = await loadTlsOptions(config)
-    }
-
-    if (tlsOptions) {
-        serviceLog('TLS enabled')
-    } else {
-        serviceLog('TLS not enabled')
-    }
-
-    const server = await createServer({ config, logger, phpHandler, tlsOptions })
+    const server = await createServer({ config, logger, port: serverPort, phpHandler, tlsOptions })
 
     let viteProcess = null
+    let viteProxy = null
     if (config.vite?.enabled) {
-        const viteService = await createViteService(manager, config)
+        const { port: vitePortRange } = config.vite
+        const proxyPort = await getPort(vitePortRange.start, vitePortRange.stop)
+
+        const viteService = await createViteService(manager, config, tlsEnabled, proxyPort)
         if (viteService) {
             viteProcess = viteService.start()
             serviceLog(`Vite started, PID: ${viteProcess.pid}`)
         } else {
             serviceLog('Vite not started')
         }
-    }
 
-    let viteProxy = null
-    if (viteProcess) {
-        viteProxy = await createViteProxy({ config, logger, viteInternalPort: viteProcess.meta.port, tlsOptions })
+        if (viteProcess) {
+            viteProxy = await createViteProxy({ config, logger, port: proxyPort, viteInternalPort: viteProcess.meta.port, tlsOptions })
+        }
     }
 
     const shutdown = createShutdown({ manager, server, logger })
@@ -123,6 +136,7 @@ async function commandStart(cliOpts) {
                 if (viteProxy) {
                     await viteProxy.shutdown();
                 }
+                await phpCleanup();
                 await shutdown(signal);
             } catch (err) {
                 logger.error(`\nShutdown failed: ${err.message}`);
@@ -134,18 +148,11 @@ async function commandStart(cliOpts) {
     await server.start()
     await viteProxy?.start()
 
-    const scheme = tlsOptions ? 'https' : 'http'
-    const serverPort = server.instance.server.address().port
-    const serverUrl = config.https?.enabled && config.https.domain
-        ? `${scheme}://${config.https.domain}:${serverPort}`
-        : buildUrl(scheme, config.server.host, serverPort)
-
     serviceLog('')
     serviceUrl('Server:', serverUrl)
 
     if (viteProxy) {
-        const viteUrl = buildUrl(scheme, config.vite.host, viteProxy.port)
-        serviceUrl('Vite:  ', viteUrl)
+        serviceUrl('Vite:  ', viteProxy.origin)
     }
 
     serviceLog('')

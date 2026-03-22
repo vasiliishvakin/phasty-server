@@ -87,6 +87,23 @@ export function buildUrl(scheme, host, port) {
     return `${scheme}://${displayHost}${portSuffix}`
 }
 
+/**
+ * @param {import('./config.js').Config} config
+ * @param {number} port
+ * @param {boolean} tlsEnabled
+ * @returns {{ scheme: 'http'|'https', host: string, port: number, buildUrl: () => string }}
+ */
+export function resolveServerAddress(config, port, tlsEnabled) {
+    const scheme = tlsEnabled ? 'https' : 'http'
+    const host = tlsEnabled && config.https?.domain ? config.https.domain : config.server.host
+    return {
+        scheme,
+        host,
+        port,
+        buildUrl: () => buildUrl(scheme, host, port)
+    }
+}
+
 export function isCovered(fqdn, certDomain) {
     if (certDomain.startsWith('*.')) {
         const base = certDomain.slice(2)

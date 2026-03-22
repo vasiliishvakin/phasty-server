@@ -1,5 +1,5 @@
 // @ts-check
-import { fileExists, getPort } from '../helpers.js'
+import { fileExists, getPort, resolveServerAddress } from '../helpers.js'
 import { getLogger } from '../logger/logger.js'
 import path from 'node:path'
 
@@ -8,8 +8,11 @@ const logger = getLogger()
 /**
  * @param {import('../processManager.js').ProcessManager} manager
  * @param {import('../config.js').Config} config
+ * @param {boolean} tlsEnabled
+ * @param {number} [proxyPort]
+ * @returns {Promise<{ start: () => import('execa').ResultPromise } | undefined>}
  */
-export async function createViteService(manager, config) {
+export async function createViteService(manager, config, tlsEnabled, proxyPort) {
 
     const { enabled, bin, script, instance: { host, port: { start: portStart, stop: portStop } } } = config.vite
     const packageJsonPath = path.join(process.cwd(), 'package.json')
@@ -28,7 +31,13 @@ export async function createViteService(manager, config) {
     function start() {
         const params = ['run', script, '--', '--port', String(port), '--host', host]
 
-        const env = { ...process.env }
+        const serverAddress = resolveServerAddress(config, port, tlsEnabled)
+        const env = {
+            ...process.env,
+            PROXY_SCHEME: serverAddress.scheme,
+            PROXY_HOST: serverAddress.host,
+            PROXY_PORT: String(proxyPort),
+        }
 
         const opts = { env }
 

@@ -28,7 +28,10 @@ const merge = deepmergeCustom({
 export const ConfigSchema = z.object({
     server: z.object({
         host: z.string().default('0.0.0.0'),
-        port: z.number().int().min(1).max(65535).optional(),
+        port: z.object({
+            start: z.number().int().min(1).max(65535).default(8000),
+            stop: z.number().int().min(1).max(65535).optional(),
+        }).prefault({}),
     }).prefault({}),
 
     routing: z.object({
@@ -42,7 +45,7 @@ export const ConfigSchema = z.object({
         host: z.string().default('127.0.0.1'),
         workers: z.coerce.number().int().positive().optional(),
         port: z.object({
-            start: z.number().int().min(1).max(65535).default(8000),
+            start: z.number().int().min(1).max(65535).default(8100),
             stop: z.number().int().min(1).max(65535).optional(),
         })
             .refine(({ start, stop }) => stop === undefined || stop >= start, {
@@ -58,13 +61,13 @@ export const ConfigSchema = z.object({
         script: z.string().default('dev'),
         host: z.string().default('0.0.0.0'),
         port: z.object({
-            start: z.number().int().min(1).max(65535).default(8000),
+            start: z.number().int().min(1).max(65535).default(8200),
             stop: z.number().int().min(1).max(65535).optional(),
         }).prefault({}),
         instance: z.object({
             host: z.string().default('127.0.0.1'),
             port: z.object({
-                start: z.number().int().min(1).max(65535).default(8000),
+                start: z.number().int().min(1).max(65535).default(8300),
                 stop: z.number().int().min(1).max(65535).optional(),
             }).prefault({}),
         }).prefault({}),
@@ -151,7 +154,7 @@ async function loadProjectConfig() {
 function normalizeCli(cli) {
     return {
         server: {
-            port: cli.port,
+            port: cli.port ? { start: cli.port } : undefined,
             host: cli.host
         },
         php: {

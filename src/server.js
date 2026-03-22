@@ -1,7 +1,6 @@
 import Fastify from 'fastify'
 import handlerPlugin from './plugins/handler.js'
 
-
 /**
  * @param {import('../config.js').Config} config
  * @returns {Promise<import('fastify').FastifyInstance>}
@@ -22,7 +21,7 @@ async function build({ config, logger, phpHandler, tlsOptions }) {
     return fastify
 }
 
-export async function createServer({ config, logger, phpHandler, tlsOptions }) {
+export async function createServer({ config, logger, port, phpHandler, tlsOptions }) {
     const fastify = await build({ config, logger, phpHandler, tlsOptions })
 
     let started = false
@@ -30,7 +29,7 @@ export async function createServer({ config, logger, phpHandler, tlsOptions }) {
     async function start() {
         if (started) return fastify
 
-        const { host, port } = config.server
+        const host = config.server.host
 
         await fastify.listen({ host, port })
         fastify.server.setTimeout(0)

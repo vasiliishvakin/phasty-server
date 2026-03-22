@@ -1,21 +1,19 @@
 import Fastify from 'fastify'
 import httpProxy from '@fastify/http-proxy'
-import { getPort } from './helpers.js'
+import { resolveServerAddress } from './helpers.js'
 
 /**
  * @param {import('../config.js').Config} config
  * @returns {Promise<import('fastify').FastifyInstance>}
  */
-export async function createViteProxy({ config, logger, viteInternalPort, tlsOptions }) {
+export async function createViteProxy({ config, logger, port, viteInternalPort, tlsOptions }) {
     const fastify = Fastify({
         loggerInstance: logger,
         ...(tlsOptions ? { https: tlsOptions } : {}),
     })
 
-    const { host, port: portRange, instance: instanceConfig } = config.vite
+    const { host, instance: instanceConfig } = config.vite
     const { host: viteInternalHost } = instanceConfig
-
-    const port = await getPort(portRange.start, portRange.stop)
 
     const upstream = `http://${viteInternalHost}:${viteInternalPort}`
 
@@ -24,8 +22,10 @@ export async function createViteProxy({ config, logger, viteInternalPort, tlsOpt
         websocket: true,
     })
 
-    const mainOrigin = `${host}:${port}`
-    logger.info(`Vite proxy configured to forward ${mainOrigin} to ${upstream}`)
+    const serverAddress = resolveServerAddress(config, port, !!tlsOptions)
+    const origin = serverAddress.buildUrl()
+
+    logger.info(`Vite proxy configured to forward ${origin} to ${upstream}`)
 
     let started = false
     async function start() {
@@ -49,5 +49,6 @@ export async function createViteProxy({ config, logger, viteInternalPort, tlsOpt
         shutdown,
         instance: fastify,
         port,
+        origin,
     }
 }
