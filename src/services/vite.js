@@ -42,7 +42,7 @@ export async function createViteService(manager, config, tlsEnabled, proxyPort) 
 
         logger.info(`Starting Vite (${bin} run ${script}) on ${host}:${port}...`)
 
-        const meta = { host, port }
+        const meta = { host, port, killSignal: 'SIGINT' }
 
         return manager.run(bin, params, opts, meta)
     }

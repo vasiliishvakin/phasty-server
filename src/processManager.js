@@ -24,7 +24,7 @@ export class ProcessManager {
 
         child.finally(() => {
             this.processes = this.processes.filter(p => p !== child)
-        })
+        }).catch(() => {})
 
         child.meta = { ...meta, cmd, args, opts }
 
@@ -35,7 +35,7 @@ export class ProcessManager {
         await Promise.allSettled(
             this.processes.map(async p => {
                 if (!p.killed) {
-                    p.kill('SIGTERM')
+                    p.kill(p.meta.killSignal ?? 'SIGTERM')
                 }
 
                 const timeout = setTimeout(() => {

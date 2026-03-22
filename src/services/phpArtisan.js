@@ -80,6 +80,19 @@ export async function createPhpArtisanService(manager, config, tlsEnabled, proxy
  */
 const PHASTY_COMMENT_PREFIX = '# phasty: '
 
+/**
+ * Patches a key in a .env file with a new value, backing up the original.
+ * If the key already exists, the original value is preserved as a comment
+ * (`# phasty: KEY=original`) above the patched line so it can be restored.
+ * If the key does not exist, it is appended to the end of the file.
+ *
+ * @param {string} envPath - Absolute path to the .env file
+ * @param {string} key - Environment variable name to patch (e.g. `APP_URL`)
+ * @param {string} value - New value to set
+ * @param {import('pino').Logger} logger
+ * @returns {Promise<() => Promise<void>>} Async cleanup function that restores
+ *   the original value (or removes the key if it didn't exist before)
+ */
 async function patchDotEnv(envPath, key, value, logger) {
     let original
 
@@ -102,8 +115,9 @@ async function patchDotEnv(envPath, key, value, logger) {
         await writeFile(envPath, patched, 'utf8')
         logger.info(`Set ${key}=${value} in .env`)
     } catch (err) {
-        if (err.code !== 'ENOENT') {
-            logger.warn(`Could not patch .env: ${err.message}`)
+        const error = /** @type {NodeJS.ErrnoException} */ (err)
+        if (error.code !== 'ENOENT') {
+            logger.warn(`Could not patch .env: ${error.message}`)
         }
         return async () => { }
     }
@@ -124,7 +138,8 @@ async function patchDotEnv(envPath, key, value, logger) {
             await writeFile(envPath, restored, 'utf8')
             logger.info(`Restored ${key} in .env`)
         } catch (err) {
-            logger.warn(`Could not restore .env: ${err.message}`)
+            const error = /** @type {Error} */ (err)
+            logger.warn(`Could not restore .env: ${error.message}`)
         }
     }
 }
