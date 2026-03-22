@@ -9,8 +9,7 @@ const logger = getLogger()
  * @param {import('../processManager.js').ProcessManager} manager
  * @param {import('../config.js').Config} config
  * @param {boolean} tlsEnabled
- * @param {number} [proxyPort]
- * @returns {Promise<{ start: () => import('execa').ResultPromise } | undefined>}
+ * @param {number} proxyPort
  */
 export async function createViteService(manager, config, tlsEnabled, proxyPort) {
 

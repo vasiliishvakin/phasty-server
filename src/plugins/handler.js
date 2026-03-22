@@ -16,14 +16,18 @@ import { fileExists, resolveSafePath } from '../helpers.js'
  */
 export default async function handlerPlugin(fastify, { config, logger, phpHandler }) {
 
+    const publicDirs = config.routing?.publicDirs ?? [process.cwd()]
+    const phpExtensions = new Set(config.php?.extensions ?? ['php'])
+
     // register plugins
     if (phpHandler) {
+        console.log('Registering PHP handler plugin with config:', phpHandler)
         await fastify.register(replyFrom,
             {
-                base: `http://${phpHandler.host}:${phpHandler.port}`,
+                base: `http://${phpHandler.host}:${phpHandler.port}/`,
                 undici: {
-                    headersTimeout: 5 * 60 * 1000,
-                    bodyTimeout: 5 * 60 * 1000,
+                    // headersTimeout: 5 * 60 * 1000,
+                    // bodyTimeout: 5 * 60 * 1000,
                 }
             }
         )
@@ -56,12 +60,20 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
      * @param {FastifyReply} reply
      */
     async function handleRequest(request, reply) {
+        const urlPath = request.url.split('?')[0].split('#')[0]
+        const ext = urlPath.split('.').pop()
+
+        if (phpHandler && phpExtensions.has(ext)) {
+            await handlePhpRequest(request, reply)
+            return
+        }
+
         const processed = await handleStaticRequest(request, reply)
         if (processed) return
 
         if (phpHandler) {
-            const processed = await handlePhpRequest(request, reply)
-            if (processed) return
+            await handlePhpRequest(request, reply)
+            if (reply.sent) return
         }
 
         await reply.code(404).send('Not found')
@@ -72,7 +84,6 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
      * @param {FastifyReply} reply
      */
     async function handleStaticRequest(request, reply) {
-        const publicDirs = config.routing?.publicDirs ?? [process.cwd()]
         const urlPath = request.url.split('?')[0].split('#')[0]
 
         for (const dir of publicDirs) {
@@ -99,7 +110,7 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
     * @param {FastifyReply} reply
     */
     function handlePhpRequest(request, reply) {
-        reply.from(request.url, {
+        return reply.from(request.url, {
             rewriteRequestHeaders(req, headers) {
                 return {
                     ...headers,
@@ -109,7 +120,6 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
                 }
             }
         })
-        return true
     }
 }
 
