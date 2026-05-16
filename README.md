@@ -23,7 +23,7 @@ phasty --help
 | `--port=N` | auto | Fastify port |
 | `--php-port=N` | auto | `php artisan serve` port |
 | `--php=path` | `php` | PHP binary |
-| `--public-dir=dir` | `public` | Static files root |
+| `--public-dir=dir` | cwd | Static files root |
 | `--host=host` | `0.0.0.0` | Bind address |
 
 ## Routing
@@ -42,7 +42,7 @@ Create `phasty.config.js` in the project root:
 export default {
   server: {
     host: '0.0.0.0',
-    port: null,           // auto
+    port: { start: 8000, stop: 8999 },
   },
   routing: {
     publicDirs: ['public'],
@@ -88,6 +88,8 @@ server: {
     : true,
 }
 ```
+
+When `--public-dir` or `routing.publicDirs` is not set, phasty serves static files from the directory where the command is run. Deny rules still apply to paths such as `.env`, `node_modules`, and `vendor`.
 
 ## HTTPS
 

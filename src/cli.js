@@ -7,7 +7,7 @@ import { createPhpArtisanService } from './services/phpArtisan.js'
 import { createViteService } from './services/vite.js'
 import { getLogger } from './logger/logger.js'
 import { serviceLog, serviceUrl } from './logger/serviceLog.js'
-import { getPort, buildUrl, resolveServerAddress } from './helpers.js'
+import { getPort, resolveServerAddress } from './helpers.js'
 import { createViteProxy } from './viteProxy.js'
 import { ensureCert, loadTlsOptions } from './cert-manager.js'
 
@@ -64,96 +64,114 @@ async function commandStart(cliOpts) {
     const logger = getLogger()
     const config = await loadConfig(cliOpts)
     const manager = new ProcessManager(logger)
-
-    let tlsOptions = null
-    if (config.https?.enabled) {
-        await ensureCert(config, logger)
-        tlsOptions = await loadTlsOptions(config)
-    }
-
-    const tlsEnabled = !!tlsOptions
-
-    if (tlsEnabled) {
-        serviceLog('TLS enabled')
-    } else {
-        serviceLog('TLS not enabled')
-    }
-
-    const { port: { start: serverPortStart, stop: serverPortStop } } = config.server
-    const serverPort = await getPort(serverPortStart, serverPortStop)
-
-    const serverAddr = resolveServerAddress(config, serverPort, tlsEnabled)
-    const serverUrl = serverAddr.buildUrl()
-
-    let phpProcess = null
-    let phpCleanup = async () => { }
-    if (config.php?.enabled) {
-        const phpService = await createPhpArtisanService(manager, config, tlsEnabled, serverPort)
-        if (phpService) {
-            phpProcess = phpService.start()
-            phpCleanup = phpService.cleanup
-        }
-    }
-
-    if (phpProcess) {
-        serviceLog(`PHP server started, PID: ${phpProcess.pid}`)
-    } else {
-        serviceLog('PHP server not started')
-    }
-
-    const phpHandler = phpProcess ?
-        {
-            host: phpProcess.meta.host,
-            port: phpProcess.meta.port
-        } :
-        null
-
-    const server = await createServer({ config, logger, port: serverPort, phpHandler, tlsOptions })
-
-    let viteProcess = null
+    let server = null
     let viteProxy = null
-    if (config.vite?.enabled) {
-        const { port: vitePortRange } = config.vite
-        const proxyPort = await getPort(vitePortRange.start, vitePortRange.stop)
+    let phpCleanup = async () => { }
 
-        const viteService = await createViteService(manager, config, tlsEnabled, proxyPort)
-        if (viteService) {
-            viteProcess = viteService.start()
-            serviceLog(`Vite started, PID: ${viteProcess.pid}`)
+    async function cleanupStartedServices() {
+        try {
+            await viteProxy?.shutdown()
+            await phpCleanup()
+            await server?.shutdown()
+            await manager.shutdown()
+        } catch (cleanupErr) {
+            logger.error(`Cleanup failed: ${cleanupErr.message}`)
+        }
+    }
+
+    try {
+        let tlsOptions = null
+        if (config.https?.enabled) {
+            await ensureCert(config, logger)
+            tlsOptions = await loadTlsOptions(config)
+        }
+
+        const tlsEnabled = !!tlsOptions
+
+        if (tlsEnabled) {
+            serviceLog('TLS enabled')
         } else {
-            serviceLog('Vite not started')
+            serviceLog('TLS not enabled')
         }
 
-        if (viteProcess) {
-            viteProxy = await createViteProxy({ config, logger, port: proxyPort, viteInternalPort: viteProcess.meta.port, tlsOptions })
-        }
-    }
+        const { port: { start: serverPortStart, stop: serverPortStop } } = config.server
+        const serverPort = await getPort(serverPortStart, serverPortStop)
 
-    const shutdown = createShutdown({ manager, server, logger })
-    for (const signal of ['SIGINT', 'SIGTERM']) {
-        process.once(signal, async () => {
-            try {
-                if (viteProxy) {
-                    await viteProxy.shutdown();
-                }
-                await phpCleanup();
-                await shutdown(signal);
-            } catch (err) {
-                logger.error(`\nShutdown failed: ${err.message}`);
-                process.exit(1);
+        const serverAddr = resolveServerAddress(config, serverPort, tlsEnabled)
+        const serverUrl = serverAddr.buildUrl()
+
+        let phpProcess = null
+        if (config.php?.enabled) {
+            const phpService = await createPhpArtisanService(manager, config, tlsEnabled, serverPort)
+            if (phpService) {
+                phpProcess = phpService.start()
+                phpCleanup = phpService.cleanup
             }
-        });
+        }
+
+        if (phpProcess) {
+            serviceLog(`PHP server started, PID: ${phpProcess.pid}`)
+        } else {
+            serviceLog('PHP server not started')
+        }
+
+        const phpHandler = phpProcess ?
+            {
+                host: phpProcess.meta.host,
+                port: phpProcess.meta.port
+            } :
+            null
+
+        server = await createServer({ config, logger, port: serverPort, phpHandler, tlsOptions })
+
+        let viteProcess = null
+        if (config.vite?.enabled) {
+            const { port: vitePortRange } = config.vite
+            const proxyPort = await getPort(vitePortRange.start, vitePortRange.stop)
+
+            const viteService = await createViteService(manager, config, tlsEnabled, proxyPort)
+            if (viteService) {
+                viteProcess = viteService.start()
+                serviceLog(`Vite started, PID: ${viteProcess.pid}`)
+            } else {
+                serviceLog('Vite not started')
+            }
+
+            if (viteProcess) {
+                viteProxy = await createViteProxy({ config, logger, port: proxyPort, viteInternalPort: viteProcess.meta.port, tlsOptions })
+            }
+        }
+
+        const shutdown = createShutdown({ manager, server, logger })
+        for (const signal of ['SIGINT', 'SIGTERM']) {
+            process.once(signal, async () => {
+                try {
+                    if (viteProxy) {
+                        await viteProxy.shutdown();
+                    }
+                    await phpCleanup();
+                    await shutdown(signal);
+                } catch (err) {
+                    logger.error(`\nShutdown failed: ${err.message}`);
+                    process.exit(1);
+                }
+            });
+        }
+
+        await server.start()
+        await viteProxy?.start()
+
+        serviceLog('')
+        serviceUrl('Server:', serverUrl)
+
+        if (viteProxy) {
+            serviceUrl('Vite:  ', viteProxy.origin)
+        }
+
+        serviceLog('')
+    } catch (err) {
+        logger.error(`Failed to start phasty: ${err.message}`)
+        await cleanupStartedServices()
+        process.exit(1)
     }
-
-    await server.start()
-    await viteProxy?.start()
-
-    serviceLog('')
-    serviceUrl('Server:', serverUrl)
-
-    if (viteProxy) {
-        serviceUrl('Vite:  ', viteProxy.origin)
-    }
-
-    serviceLog('')
 }

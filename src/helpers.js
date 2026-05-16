@@ -109,5 +109,5 @@ export function isCovered(fqdn, certDomain) {
         const base = certDomain.slice(2)
         return fqdn === base || fqdn.endsWith(`.${base}`)
     }
-    return fqdn === certDomain || fqdn.endsWith(`.${certDomain}`)
+    return fqdn === certDomain
 }

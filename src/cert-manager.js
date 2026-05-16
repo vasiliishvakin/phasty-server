@@ -116,10 +116,15 @@ export async function loadTlsOptions(config) {
     const certDir = getCertDir(config.https)
     const base = `/etc/letsencrypt/live/${certDir}`
 
-    const [key, cert] = await Promise.all([
-        readFile(`${base}/privkey.pem`),
-        readFile(`${base}/fullchain.pem`)
-    ])
+    let key, cert
+    try {
+        ;[key, cert] = await Promise.all([
+            readFile(`${base}/privkey.pem`),
+            readFile(`${base}/fullchain.pem`)
+        ])
+    } catch (err) {
+        throw new Error(`Failed to load TLS certificates from ${base}: ${err.message}`)
+    }
 
     return {
         allowHTTP1: true,

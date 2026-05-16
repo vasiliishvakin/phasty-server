@@ -1,3 +1,4 @@
+import path from 'node:path'
 import replyFrom from '@fastify/reply-from'
 import fastifyStatic from '@fastify/static'
 import { fileExists, resolveSafePath } from '../helpers.js'
@@ -16,12 +17,13 @@ import { fileExists, resolveSafePath } from '../helpers.js'
  */
 export default async function handlerPlugin(fastify, { config, logger, phpHandler }) {
 
-    const publicDirs = config.routing?.publicDirs ?? [process.cwd()]
+    const publicDirs = (config.routing?.publicDirs?.length ? config.routing.publicDirs : [process.cwd()])
+        .map(dir => path.resolve(dir))
     const phpExtensions = new Set(config.php?.extensions ?? ['php'])
+    const denyRegex = (config.routing?.denyRegex ?? []).map(pattern => new RegExp(pattern))
 
     // register plugins
     if (phpHandler) {
-        console.log('Registering PHP handler plugin with config:', phpHandler)
         await fastify.register(replyFrom,
             {
                 base: `http://${phpHandler.host}:${phpHandler.port}/`,
@@ -61,7 +63,12 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
      */
     async function handleRequest(request, reply) {
         const urlPath = request.url.split('?')[0].split('#')[0]
-        const ext = urlPath.split('.').pop()
+        const ext = path.extname(urlPath).slice(1)
+
+        if (isDenied(urlPath)) {
+            await reply.code(404).send('Not found')
+            return
+        }
 
         if (phpHandler && phpExtensions.has(ext)) {
             await handlePhpRequest(request, reply)
@@ -97,12 +104,19 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
                 return true
 
             } catch (err) {
-                logger.error(`Error serving static file: ${err.message}`)
-                await reply.code(500).send('Internal Server Error')
-                return true
+                logger.error(`Error serving static file from ${dir}: ${err.message}`)
             }
         }
         return false
+    }
+
+    /**
+     * @param {string} urlPath
+     * @returns {boolean}
+     */
+    function isDenied(urlPath) {
+        const normalized = urlPath.replace(/^\/+/, '')
+        return denyRegex.some(regex => regex.test(normalized) || regex.test(urlPath))
     }
 
     /**
@@ -115,12 +129,11 @@ export default async function handlerPlugin(fastify, { config, logger, phpHandle
                 return {
                     ...headers,
                     'x-forwarded-for': req.ip,
-                    'x-forwarded-host': headers.host,
+                    'x-forwarded-host': req.headers.host,
                     'x-forwarded-proto': req.protocol,
                 }
             }
         })
     }
 }
-
 

@@ -34,12 +34,10 @@ export class ProcessManager {
     async shutdown() {
         await Promise.allSettled(
             this.processes.map(async p => {
-                if (!p.killed) {
-                    p.kill(p.meta.killSignal ?? 'SIGTERM')
-                }
+                p.kill(p.meta.killSignal ?? 'SIGTERM')
 
                 const timeout = setTimeout(() => {
-                    if (!p.killed) p.kill('SIGKILL')
+                    p.kill('SIGKILL')
                 }, 5000)
 
                 try {

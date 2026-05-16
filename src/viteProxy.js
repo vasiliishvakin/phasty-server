@@ -31,7 +31,11 @@ export async function createViteProxy({ config, logger, port, viteInternalPort, 
     async function start() {
         if (started) return fastify
 
-        await fastify.listen({ host, port })
+        try {
+            await fastify.listen({ host, port })
+        } catch (err) {
+            throw new Error(`Failed to start Vite proxy on ${host}:${port}: ${err.message}`)
+        }
         fastify.server.setTimeout(0)
 
         started = true

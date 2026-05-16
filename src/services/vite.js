@@ -30,12 +30,16 @@ export async function createViteService(manager, config, tlsEnabled, proxyPort) 
     function start() {
         const params = ['run', script, '--', '--port', String(port), '--host', host]
 
-        const serverAddress = resolveServerAddress(config, port, tlsEnabled)
+        const serverAddress = resolveServerAddress(config, proxyPort, tlsEnabled)
+        const origin = serverAddress.buildUrl()
         const env = {
             ...process.env,
-            PROXY_SCHEME: serverAddress.scheme,
-            PROXY_HOST: serverAddress.host,
-            PROXY_PORT: String(proxyPort),
+            PHASTY_SCHEME: serverAddress.scheme,
+            PHASTY_HOST: serverAddress.host,
+            PHASTY_PORT: String(proxyPort),
+            PHASTY_DOMAIN: serverAddress.host,
+            PHASTY_VITE_ORIGIN: origin,
+            PHASTY_VITE_PORT: String(proxyPort),
         }
 
         const opts = { env }

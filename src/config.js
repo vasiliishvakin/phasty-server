@@ -147,7 +147,13 @@ async function loadProjectConfig() {
 
     if (!fs.existsSync(file)) return {}
 
-    const mod = await import(file)
+    let mod
+    try {
+        mod = await import(file)
+    } catch (err) {
+        console.error(`Failed to load ${file}: ${err.message}`)
+        process.exit(1)
+    }
     return mod.default ?? mod
 }
 

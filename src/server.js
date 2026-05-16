@@ -31,7 +31,11 @@ export async function createServer({ config, logger, port, phpHandler, tlsOption
 
         const host = config.server.host
 
-        await fastify.listen({ host, port })
+        try {
+            await fastify.listen({ host, port })
+        } catch (err) {
+            throw new Error(`Failed to start server on ${host}:${port}: ${err.message}`)
+        }
         fastify.server.setTimeout(0)
 
         started = true

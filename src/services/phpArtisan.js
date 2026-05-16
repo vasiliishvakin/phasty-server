@@ -80,6 +80,10 @@ export async function createPhpArtisanService(manager, config, tlsEnabled, proxy
  */
 const PHASTY_COMMENT_PREFIX = '# phasty: '
 
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /**
  * Patches a key in a .env file with a new value, backing up the original.
  * If the key already exists, the original value is preserved as a comment
@@ -93,20 +97,32 @@ const PHASTY_COMMENT_PREFIX = '# phasty: '
  * @returns {Promise<() => Promise<void>>} Async cleanup function that restores
  *   the original value (or removes the key if it didn't exist before)
  */
-async function patchDotEnv(envPath, key, value, logger) {
+export async function patchDotEnv(envPath, key, value, logger) {
     let original
 
     try {
         const content = await readFile(envPath, 'utf8')
-        const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'))
-        original = match ? match[1] : undefined
+        const escapedKey = escapeRegExp(key)
+        const keyRegex = new RegExp(`^${escapedKey}=(.*)$`, 'm')
+        const backupRegex = new RegExp(`^${escapeRegExp(PHASTY_COMMENT_PREFIX)}${escapedKey}=(.*)$`, 'm')
+        const existingMatch = content.match(keyRegex)
+        const backupMatch = content.match(backupRegex)
+        original = backupMatch ? backupMatch[1] : existingMatch ? existingMatch[1] : undefined
 
         let patched
-        if (match) {
-            // Replace existing line, prepend a backup comment above it
+        if (existingMatch) {
+            if (backupMatch) {
+                patched = content.replace(keyRegex, () => `${key}=${value}`)
+            } else {
+                patched = content.replace(
+                    keyRegex,
+                    () => `${PHASTY_COMMENT_PREFIX}${key}=${original}\n${key}=${value}`,
+                )
+            }
+        } else if (backupMatch) {
             patched = content.replace(
-                new RegExp(`^${key}=.*$`, 'm'),
-                `${PHASTY_COMMENT_PREFIX}${key}=${original}\n${key}=${value}`,
+                backupRegex,
+                match => `${match}\n${key}=${value}`,
             )
         } else {
             patched = content + (content.endsWith('\n') ? '' : '\n') + `${key}=${value}\n`
@@ -125,15 +141,19 @@ async function patchDotEnv(envPath, key, value, logger) {
     return async () => {
         try {
             const content = await readFile(envPath, 'utf8')
+            const escapedKey = escapeRegExp(key)
             let restored
             if (original !== undefined) {
-                // Remove backup comment and restore original value
+                // Remove backup comment and restore original value.
                 restored = content.replace(
-                    new RegExp(`^${PHASTY_COMMENT_PREFIX}${key}=.*\\n${key}=.*$`, 'm'),
-                    `${key}=${original}`,
+                    new RegExp(`^${escapeRegExp(PHASTY_COMMENT_PREFIX)}${escapedKey}=.*\\n${escapedKey}=.*$`, 'm'),
+                    () => `${key}=${original}`,
+                ).replace(
+                    new RegExp(`^${escapeRegExp(PHASTY_COMMENT_PREFIX)}${escapedKey}=.*$`, 'm'),
+                    () => `${key}=${original}`,
                 )
             } else {
-                restored = content.replace(new RegExp(`^${key}=.*\n?`, 'm'), '')
+                restored = content.replace(new RegExp(`^${escapedKey}=.*\n?`, 'm'), '')
             }
             await writeFile(envPath, restored, 'utf8')
             logger.info(`Restored ${key} in .env`)
